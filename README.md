@@ -1,2 +1,2 @@
 # wormhole
-A p2p client for messaging and file sharing
+A p2p utility for messaging and file sharing
