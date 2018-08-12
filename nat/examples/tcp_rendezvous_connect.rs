@@ -1,12 +1,9 @@
 extern crate bytes;
-extern crate docopt;
 extern crate env_logger;
 extern crate future_utils;
 extern crate futures;
-extern crate p2p;
+extern crate nat;
 extern crate serde;
-#[macro_use]
-extern crate serde_derive;
 extern crate safe_crypto;
 extern crate serde_json;
 extern crate tokio_core;
@@ -30,13 +27,13 @@ extern crate tokio_io;
 #[macro_use]
 extern crate unwrap;
 extern crate void;
+extern crate clap;
 
-use docopt::Docopt;
 use futures::{Async, AsyncSink, Future, Sink, Stream};
-use p2p::{RemoteTcpRendezvousServer, TcpStreamExt};
+use nat::{RemoteTcpRendezvousServer, TcpStreamExt, P2p};
 use safe_crypto::PublicId;
 use std::net::{Shutdown, SocketAddr};
-use std::{env, fmt};
+use std::fmt;
 use tokio_core::net::TcpStream;
 use tokio_io::codec::length_delimited::Framed;
 use void::ResultVoidExt;
@@ -75,47 +72,61 @@ impl<S: Sink> Sink for DummyDebug<S> {
     }
 }
 
-const USAGE: &str = "
-tcp_rendezvous_connect
-
-Usage:
-    tcp_rendezvous_connect --relay=<address> \
-                           [--disable-igd] \
-                           [--traversal-server=<address>] \
-                           [--traversal-server-key=<public_key>] \
-                           <message>
-    tcp_rendezvous_connect (-h | --help)
-";
-
-#[derive(Debug, Deserialize)]
-struct Args {
-    flag_relay: SocketAddr,
-    flag_disable_igd: bool,
-    flag_traversal_server: Option<SocketAddr>,
-    flag_traversal_server_key: Option<String>,
-    arg_message: String,
-}
-
 fn main() {
     unwrap!(env_logger::init());
 
-    let args = env::args().collect::<Vec<_>>();
-    println!("args == {:?}", args);
+    let matches = clap::App::new("TCP Rendezvous Connect")
+        .arg(
+            clap::Arg::with_name("relay-server")
+                .short("r")
+                .takes_value(true)
+                .required(true)
+                .help("Relay server address")
+        )
+        .arg(
+            clap::Arg::with_name("disable-igd")
+                .help("Disable IGD")
+        )
+        .arg(
+            clap::Arg::with_name("traversal-server")
+                .alias("ts")
+                .requires("traversal-server-key")
+                .help("Traversal server address")
+        )
+        .arg(
+            clap::Arg::with_name("traversal-server-key")
+                .alias("ts-key")
+                .requires("traversal-server")
+                .help("Traversal server public key")
+        )
+        .arg(
+            clap::Arg::with_name("message")
+                .index(1)
+                .required(true)
+                .help("The message to send")
+        )
+        .get_matches();
 
-    let args: Args = {
-        Docopt::new(USAGE)
-            .and_then(|d| d.deserialize())
-            .unwrap_or_else(|e| e.exit())
-    };
+    let disable_igd = matches.is_present("disable-igd");
+    let relay_server: SocketAddr = matches.value_of("relay-server")
+        .map(|s| s.parse().unwrap())
+        .unwrap();
+    let traversal_server: Option<SocketAddr> = matches.value_of("traversal-server")
+        .map(|s| s.parse().unwrap());
+    let traversal_server_key: Option<String> = matches.value_of("traversal-server-key")
+        .map(String::from);
+    let message = matches.value_of("message")
+        .map(String::from)
+        .unwrap();
 
-    let mc = p2p::P2p::default();
-    if args.flag_disable_igd {
+    let mc = P2p::default();
+    if disable_igd {
         mc.disable_igd();
     }
 
-    if let Some(server_addr) = args.flag_traversal_server {
+    if let Some(server_addr) = traversal_server {
         let server_pub_key = unwrap!(
-            args.flag_traversal_server_key,
+            traversal_server_key,
             "If echo address server is specified, it's public key must be given too.",
         );
         let server_pub_key: PublicId = unwrap!(serde_json::from_str(&server_pub_key));
@@ -123,13 +134,12 @@ fn main() {
         mc.add_tcp_addr_querier(addr_querier);
     }
 
-    let relay_addr = args.flag_relay;
-    let message: Vec<u8> = args.arg_message.into();
+    let message: Vec<u8> = message.into_bytes();
 
     let mut core = unwrap!(tokio_core::reactor::Core::new());
     let handle = core.handle();
     let res = core.run({
-        TcpStream::connect(&relay_addr, &handle)
+        TcpStream::connect(&relay_server, &handle)
             .map_err(|e| panic!("error connecting to relay server: {}", e))
             .and_then(move |relay_stream| {
                 let relay_channel =

@@ -1,17 +1,17 @@
 extern crate futures;
-extern crate p2p;
+extern crate nat;
 extern crate serde_json;
 extern crate tokio_core;
 #[macro_use]
 extern crate unwrap;
 
 use futures::{future, Future};
-use p2p::TcpRendezvousServer;
+use nat::{TcpRendezvousServer, P2p};
 
 fn main() {
     let mut core = unwrap!(tokio_core::reactor::Core::new());
     let handle = core.handle();
-    let mc = p2p::P2p::default();
+    let mc = P2p::default();
     let res = core.run({
         TcpRendezvousServer::bind_public(&"0.0.0.0:0".parse().unwrap(), &handle, &mc)
             .map_err(|e| panic!("Error binding server publicly: {}", e))
